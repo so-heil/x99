@@ -1,4 +1,4 @@
-module github.com/0xgwyn/x9
+module github.com/so-heil/x99
 
 go 1.20
 

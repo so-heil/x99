@@ -3,10 +3,11 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"math"
 	"net/url"
 	"os"
-	"strings"
+	"strconv"
 
 	"github.com/projectdiscovery/goflags"
 	"github.com/projectdiscovery/gologger"
@@ -30,22 +31,45 @@ var options *Options
 
 func main() {
 	options = ParseOptions()
-	urls := getUrls()
 	params := getParams()
 
-	var output []string
-	if sliceUtil.Contains(options.generationStrategy, "normal") {
-		output = append(output, normalStrat(urls, params)...)
-	}
-	if sliceUtil.Contains(options.generationStrategy, "combine") {
-		output = append(output, combineStrat(urls)...)
-	}
-	if sliceUtil.Contains(options.generationStrategy, "ignore") {
-		output = append(output, ignoreStrat(urls, params)...)
+	var input io.Reader
+	if options.list != "" {
+		f, err := os.Open(options.list)
+		if err != nil {
+			gologger.Fatal().Msg(err.Error())
+		}
+		defer f.Close()
+		input = f
+	} else {
+		input = os.Stdin
 	}
 
-	writeOutput(output)
+	hasNormalStrat := sliceUtil.Contains(options.generationStrategy, "normal")
+	hasCombineStrat := sliceUtil.Contains(options.generationStrategy, "combine")
+	hasIgnoreStrat := sliceUtil.Contains(options.generationStrategy, "ignore")
 
+	scn := bufio.NewScanner(input)
+	for scn.Scan() {
+		u, err := url.Parse(scn.Text())
+
+		if err != nil {
+			gologger.Error().Str("url", u.String()).Str("parseError", err.Error()).Msg(fmt.Errorf("invalid url: skipping url", err).Error())
+			continue
+		}
+
+		if hasNormalStrat {
+			newParamsOnlyStrat(u, params)
+		}
+
+		if hasCombineStrat {
+			combineStrat(u)
+		}
+
+		if hasIgnoreStrat {
+			ignoreStrat(u, params)
+		}
+	}
 }
 
 func ParseOptions() *Options {
@@ -74,7 +98,6 @@ func ParseOptions() *Options {
 				`
 	flags.StringVarP(&options.valueStrategy, "value-strategy", "vs", "suffix", valueStrategyHelp)
 
-	flags.StringVarP(&options.output, "output", "o", "", "File to write output results")
 	flags.BoolVarP(&options.doubleEncode, "double-encode", "de", false, "Double encode the values")
 
 	if err := flags.Parse(); err != nil {
@@ -134,23 +157,6 @@ func (options *Options) validateOptions() error {
 	return nil
 }
 
-func writeOutput(urls []string) {
-	output := strings.Join(urls, "\n")
-	// save to output file otherwise write to stdin
-	if options.output != "" {
-		outputFile, err := os.OpenFile(options.output, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
-		if err != nil {
-			gologger.Fatal().Msg(err.Error())
-		}
-		defer outputFile.Close()
-
-		fmt.Fprint(outputFile, output+"\n")
-
-	} else {
-		fmt.Fprint(os.Stdout, output+"\n")
-	}
-}
-
 func getParams() []string {
 	params := []string{}
 
@@ -158,240 +164,124 @@ func getParams() []string {
 		return params
 	}
 
-	ch, err := fileUtil.ReadFile(options.parameters)
+	f, err := os.Open(options.parameters)
 	if err != nil {
 		gologger.Fatal().Msg(err.Error())
 	}
-	for param := range ch {
-		params = append(params, param)
+	defer f.Close()
+
+	scn := bufio.NewScanner(f)
+	for scn.Scan() {
+		params = append(params, scn.Text())
 	}
 
 	return params
 }
 
-func getUrls() []string {
-	urls := []string{}
+func combineStrat(u *url.URL) {
+	// parse each url
+	queryParams := u.Query()
+	numOfOldParams := len(queryParams)
 
-	// read input from a file otherwise read from stdin
-	if options.list != "" {
-		ch, err := fileUtil.ReadFile(options.list)
-		if err != nil {
-			gologger.Fatal().Msg(err.Error())
-		}
-		for url := range ch {
-			urls = append(urls, url)
-		}
-	} else if fileUtil.HasStdin() {
-		scanner := bufio.NewScanner(os.Stdin)
-		for scanner.Scan() {
-			urls = append(urls, strings.TrimSpace(scanner.Text()))
-		}
-		if err := scanner.Err(); err != nil {
-			gologger.Fatal().Msg(err.Error())
-		}
+	urlKeys := make([]string, len(queryParams))
+	i := 0
+	for key := range queryParams {
+		urlKeys[i] = key
+		i++
 	}
 
-	return urls
-}
-
-func combineStrat(urls []string) []string {
-	modifiedUrls := []string{}
-
-	for _, singleUrl := range urls {
-		// parse each url
-		parsedUrl, err := url.Parse(singleUrl)
-		if err != nil {
-			gologger.Fatal().Msg(err.Error())
-		}
-		queryParams := parsedUrl.Query()
-		numOfOldParams := len(queryParams)
-
-		// only get new parameters so we don't accidentally override the current params
-		oldKeys := []string{}
-		for keys := range queryParams {
-			oldKeys = append(oldKeys, keys)
-		}
-
-		for _, singeValue := range options.values {
-			// double encode the value if the flag is set
-			if options.doubleEncode {
-				singeValue = url.QueryEscape(singeValue)
-			}
-
-			// each iteration contains a url with the number of parameters provided by the chunk size flag
-			for iteration := 0; iteration < numOfOldParams; iteration++ {
-				newQueryParams := url.Values{}
-
-				// first add all parameters
-				for _, key := range oldKeys {
-					newQueryParams.Set(key, queryParams.Get(key))
-				}
-
-				// modify one parameter in each iteration
-				if options.valueStrategy == "replace" {
-					newQueryParams.Set(oldKeys[iteration], singeValue)
-				} else {
-					newQueryParams.Set(oldKeys[iteration], queryParams.Get(oldKeys[iteration])+singeValue)
-				}
-
-				parsedUrl.RawQuery = newQueryParams.Encode()
-				modifiedUrls = append(modifiedUrls, parsedUrl.String())
-			}
-		}
+	value := "soheil"
+	// double encode the value if the flag is set
+	if options.doubleEncode {
+		value = url.QueryEscape(value)
 	}
 
-	return modifiedUrls
+	urlCopy := *u
+	// each iteration contains a url with the number of parameters provided by the chunk size flag
+	for iteration := 0; iteration < numOfOldParams; iteration++ {
+		query := u.Query()
+
+		// modify one parameter in each iteration
+		if options.valueStrategy == "replace" {
+			query.Set(urlKeys[iteration], value)
+		} else {
+			query.Set(urlKeys[iteration], query.Get(urlKeys[iteration])+value)
+		}
+
+		urlCopy.RawQuery = query.Encode()
+		fmt.Println(urlCopy.String())
+	}
 }
 
-func ignoreStrat(urls []string, params []string) []string {
-	modifiedUrls := []string{}
+func ignoreStrat(u *url.URL, params []string) {
+	// parse each url
+	queryParams := u.Query()
 
-	for _, singleUrl := range urls {
-		// parse each url
-		parsedUrl, err := url.Parse(singleUrl)
-		if err != nil {
-			gologger.Fatal().Msg(err.Error())
-		}
-		queryParams := parsedUrl.Query()
-
-		// only get new parameters so we don't accidentally override the current params
-		oldKeys := []string{}
-		for keys := range queryParams {
-			oldKeys = append(oldKeys, keys)
-		}
-		newKeys, _ := sliceUtil.Diff(params, oldKeys)
-
-		// number of iteration is equivalent to the number of URLs being generated for each value
-		numOfOldParams := len(queryParams)
-		numOfIterations := int(math.Ceil(float64(len(params)) / float64(options.chunk-numOfOldParams)))
-
-		for _, singeValue := range options.values {
-			// get a copy of new parameters to use with pop in each iteration
-			newKeysCopy := make([]string, len(newKeys))
-			copy(newKeysCopy, newKeys)
-
-			// double encode the value if the flag is set
-			if options.doubleEncode {
-				singeValue = url.QueryEscape(singeValue)
-			}
-
-			// each iteration contains a url with the number of parameters provided by the chunk size flag
-			for iteration := 0; iteration < numOfIterations; iteration++ {
-				newQueryParams := url.Values{}
-
-				// add old parameters
-				for key := range queryParams {
-					newQueryParams.Set(key, queryParams.Get(key))
-				}
-
-				// add new parameters
-				for paramNum := 0; paramNum < options.chunk-numOfOldParams && len(newKeysCopy) > 0; paramNum++ {
-					newQueryParams.Set(pop(&newKeysCopy), singeValue)
-				}
-
-				parsedUrl.RawQuery = newQueryParams.Encode()
-				modifiedUrls = append(modifiedUrls, parsedUrl.String())
-			}
-		}
+	// number of iteration is equivalent to the number of URLs being generated for each value
+	numOfOldParams := len(queryParams)
+	ignoreChunk := options.chunk - numOfOldParams
+	if ignoreChunk <= 0 {
+		gologger.Error().Str("URL", u.String()).Str("paramsCount", strconv.Itoa(numOfOldParams)).Str("chunk", strconv.Itoa(options.chunk)).Msg("chunk value must be greater than url query params count, ignoring url")
+		return
 	}
 
-	return modifiedUrls
-}
+	numOfIterations := int(math.Ceil(float64(len(params)) / float64(ignoreChunk)))
 
-func normalStrat(urls []string, params []string) []string {
-	modifiedUrls := []string{}
+	value := "soheil"
 
-	for _, singleUrl := range urls {
-		// parse each url
-		parsedUrl, err := url.Parse(singleUrl)
-		if err != nil {
-			gologger.Fatal().Msg(err.Error())
-		}
-		queryParams := parsedUrl.Query()
-
-		// only get new parameters so we don't accidentally override the current params
-		oldKeys := []string{}
-		for keys := range queryParams {
-			oldKeys = append(oldKeys, keys)
-		}
-		uniqueNewKeys, uniqueOldKeys := sliceUtil.Diff(params, oldKeys)
-
-		// number of iteration is equivalent to the number of URLs being generated for each value
-		numOfIterations := int(math.Ceil(float64(len(uniqueNewKeys)+len(uniqueOldKeys)) / float64(options.chunk)))
-
-		for _, singeValue := range options.values {
-			// get a copy of new parameters to use with pop in each iteration
-			newKeysCopy := make([]string, len(uniqueNewKeys))
-			copy(newKeysCopy, uniqueNewKeys)
-
-			// double encode the value if the flag is set
-			if options.doubleEncode {
-				singeValue = url.QueryEscape(singeValue)
-			}
-			newKeysCopy = append(newKeysCopy, oldKeys...)
-
-			// each iteration contains a url with the number of parameters provided by the chunk size flag
-			for iteration := 0; iteration < numOfIterations; iteration++ {
-				newQueryParams := url.Values{}
-
-				// add new parameters
-				for paramNum := 0; paramNum < options.chunk && len(newKeysCopy) > 0; paramNum++ {
-					newQueryParams.Set(pop(&newKeysCopy), singeValue)
-				}
-
-				parsedUrl.RawQuery = newQueryParams.Encode()
-				modifiedUrls = append(modifiedUrls, parsedUrl.String())
-			}
-		}
+	// double encode the value if the flag is set
+	if options.doubleEncode {
+		value = url.QueryEscape(value)
 	}
 
-	return modifiedUrls
+	urlCopy := *u
+	// each iteration contains a url with the number of parameters provided by the chunk size flag
+	for iteration := 0; iteration < numOfIterations; iteration++ {
+		iterationParams := params[iteration*ignoreChunk : intMin((iteration+1)*ignoreChunk, len(params))]
+		query := u.Query()
+
+		for _, param := range iterationParams {
+			if !query.Has(param) {
+				query.Set(param, value)
+			}
+		}
+
+		urlCopy.RawQuery = query.Encode()
+		fmt.Println(urlCopy.String())
+	}
 }
 
-func newParamsOnlyStrat(urls []string, params []string) []string {
-	modifiedUrls := []string{}
+func intMin(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func newParamsOnlyStrat(u *url.URL, params []string) {
 	numOfIterations := int(math.Ceil(float64(len(params)) / float64(options.chunk)))
 
-	for _, singleUrl := range urls {
-		// parse each url
-		parsedUrl, err := url.Parse(singleUrl)
-		if err != nil {
-			gologger.Fatal().Msg(err.Error())
-		}
+	// get the base url (without the params and values)
+	baseUrl := u.Scheme + "://" + u.Host + u.Path
 
-		// get the base url (without the params and values)
-		baseUrl := parsedUrl.Scheme + "://" + parsedUrl.Host + parsedUrl.Path
-
-		// parse the base url
-		parsedUrl, err = url.Parse(baseUrl)
-		if err != nil {
-			gologger.Fatal().Msg(err.Error())
-		}
-		for _, singeValue := range options.values {
-			newKeys := params
-			// each iteration contains a url with the number of parameters provided by the chunk size flag
-			for iteration := 0; iteration < numOfIterations; iteration++ {
-				newQueryParams := url.Values{}
-
-				// set new parameters with the given values
-				for paramNum := 0; paramNum < options.chunk && len(newKeys) > 0; paramNum++ {
-					newQueryParams.Set(pop(&newKeys), singeValue)
-				}
-
-				// add parameters to a copy of the base url
-				parsedUrl.RawQuery = newQueryParams.Encode()
-				modifiedUrls = append(modifiedUrls, parsedUrl.String())
-			}
-		}
+	// parse the base url
+	parsedUrl, err := url.Parse(baseUrl)
+	if err != nil {
+		gologger.Fatal().Msg(err.Error())
 	}
 
-	return modifiedUrls
-}
+	// each iteration contains a url with the number of parameters provided by the chunk size flag
+	for iteration := 0; iteration < numOfIterations; iteration++ {
+		iterationParams := params[iteration*options.chunk : intMin((iteration+1)*options.chunk, len(params))]
+		iterationQueryParams := url.Values{}
 
-// pops an item from the slice then removes it from the slice
-func pop(aSlice *[]string) string {
-	f := len(*aSlice)
-	rv := (*aSlice)[f-1]
-	*aSlice = (*aSlice)[:f-1]
-	return rv
+		// set new parameters with the given values
+		for _, param := range iterationParams {
+			iterationQueryParams.Add(param, "soheil")
+		}
+
+		// add parameters to a copy of the base url
+		parsedUrl.RawQuery = iterationQueryParams.Encode()
+		fmt.Println(parsedUrl)
+	}
 }
