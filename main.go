@@ -82,7 +82,7 @@ func ParseOptions() *Options {
 	flags.StringVarP(&options.list, "list", "l", "", "List of URLS to edit (stdin could be used alternatively)")
 	flags.StringVarP(&options.parameters, "parameters", "p", "", "Parameter wordlist")
 	flags.IntVarP(&options.chunk, "chunk", "c", 15, "Number of parameters in each URL")
-	flags.StringSliceVarP(&options.values, "value", "v", nil, "Value for the parameters", goflags.StringSliceOptions)
+	flags.StringSliceVarP(&options.values, "value", "v", nil, "Value for the parameters", goflags.CommaSeparatedStringSliceOptions)
 
 	generationStrategyHelp := `
 	Select the mode strategy from the available choices:
@@ -190,26 +190,28 @@ func combineStrat(u *url.URL) {
 		i++
 	}
 
-	value := "soheil"
-	// double encode the value if the flag is set
-	if options.doubleEncode {
-		value = url.QueryEscape(value)
-	}
-
 	urlCopy := *u
-	// each iteration contains a url with the number of parameters provided by the chunk size flag
-	for iteration := 0; iteration < numOfOldParams; iteration++ {
-		query := u.Query()
 
-		// modify one parameter in each iteration
-		if options.valueStrategy == "replace" {
-			query.Set(urlKeys[iteration], value)
-		} else {
-			query.Set(urlKeys[iteration], query.Get(urlKeys[iteration])+value)
+	for _, value := range options.values {
+		// double encode the value if the flag is set
+		if options.doubleEncode {
+			value = url.QueryEscape(value)
 		}
 
-		urlCopy.RawQuery = query.Encode()
-		fmt.Println(urlCopy.String())
+		// each iteration contains a url with the number of parameters provided by the chunk size flag
+		for iteration := 0; iteration < numOfOldParams; iteration++ {
+			query := u.Query()
+
+			// modify one parameter in each iteration
+			if options.valueStrategy == "replace" {
+				query.Set(urlKeys[iteration], value)
+			} else {
+				query.Set(urlKeys[iteration], query.Get(urlKeys[iteration])+value)
+			}
+
+			urlCopy.RawQuery = query.Encode()
+			fmt.Println(urlCopy.String())
+		}
 	}
 }
 
@@ -227,27 +229,27 @@ func ignoreStrat(u *url.URL, params []string) {
 
 	numOfIterations := int(math.Ceil(float64(len(params)) / float64(ignoreChunk)))
 
-	value := "soheil"
-
 	// double encode the value if the flag is set
-	if options.doubleEncode {
-		value = url.QueryEscape(value)
-	}
-
-	urlCopy := *u
-	// each iteration contains a url with the number of parameters provided by the chunk size flag
-	for iteration := 0; iteration < numOfIterations; iteration++ {
-		iterationParams := params[iteration*ignoreChunk : intMin((iteration+1)*ignoreChunk, len(params))]
-		query := u.Query()
-
-		for _, param := range iterationParams {
-			if !query.Has(param) {
-				query.Set(param, value)
-			}
+	for _, value := range options.values {
+		if options.doubleEncode {
+			value = url.QueryEscape(value)
 		}
 
-		urlCopy.RawQuery = query.Encode()
-		fmt.Println(urlCopy.String())
+		urlCopy := *u
+		// each iteration contains a url with the number of parameters provided by the chunk size flag
+		for iteration := 0; iteration < numOfIterations; iteration++ {
+			iterationParams := params[iteration*ignoreChunk : intMin((iteration+1)*ignoreChunk, len(params))]
+			query := u.Query()
+
+			for _, param := range iterationParams {
+				if !query.Has(param) {
+					query.Set(param, value)
+				}
+			}
+
+			urlCopy.RawQuery = query.Encode()
+			fmt.Println(urlCopy.String())
+		}
 	}
 }
 
@@ -271,17 +273,19 @@ func newParamsOnlyStrat(u *url.URL, params []string) {
 	}
 
 	// each iteration contains a url with the number of parameters provided by the chunk size flag
-	for iteration := 0; iteration < numOfIterations; iteration++ {
-		iterationParams := params[iteration*options.chunk : intMin((iteration+1)*options.chunk, len(params))]
-		iterationQueryParams := url.Values{}
+	for _, value := range options.values {
+		for iteration := 0; iteration < numOfIterations; iteration++ {
+			iterationParams := params[iteration*options.chunk : intMin((iteration+1)*options.chunk, len(params))]
+			iterationQueryParams := url.Values{}
 
-		// set new parameters with the given values
-		for _, param := range iterationParams {
-			iterationQueryParams.Add(param, "soheil")
+			// set new parameters with the given values
+			for _, param := range iterationParams {
+				iterationQueryParams.Add(param, value)
+			}
+
+			// add parameters to a copy of the base url
+			parsedUrl.RawQuery = iterationQueryParams.Encode()
+			fmt.Println(parsedUrl)
 		}
-
-		// add parameters to a copy of the base url
-		parsedUrl.RawQuery = iterationQueryParams.Encode()
-		fmt.Println(parsedUrl)
 	}
 }
